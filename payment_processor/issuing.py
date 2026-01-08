@@ -1,5 +1,5 @@
 import uuid
-from typing import Optional
+from typing import Optional, Callable
 
 from .exceptions import PaymentError, AdapterError
 
@@ -166,6 +166,45 @@ class StripeIssuingAdapter:
             params["description"] = description
         topup = self._stripe.Topup.create(**params)
         return topup.to_dict() if hasattr(topup, "to_dict") else dict(topup)
+
+    def reconcile_topups(self, since: Optional[int] = None, update_fn: Optional[Callable] = None, limit: int = 100) -> list:
+        """Fetch recent Topups and return/optionally apply reconciliation.
+
+        - `since`: Unix timestamp (seconds) to fetch topups created >= since.
+        - `update_fn`: optional callable `update_fn(card_id, amount_cents, topup_id)`
+          which will be invoked for every topup that contains `metadata.card_id`.
+        - `limit`: max items per request (paginated fetch not implemented here).
+
+        Returns a list of dicts: `{topup_id, card_id, amount, currency, status, created}`
+        """
+        params = {"limit": int(limit)}
+        if since is not None:
+            params["created"] = {"gte": int(since)}
+        resp = self._stripe.Topup.list(**params)
+        items = getattr(resp, "data", resp) or []
+        results = []
+        for t in items:
+            # normalize to dict-like
+            top = t.to_dict() if hasattr(t, "to_dict") else dict(t)
+            metadata = top.get("metadata", {}) or {}
+            card_id = metadata.get("card_id")
+            amount = int(top.get("amount", 0))
+            rec = {
+                "topup_id": top.get("id"),
+                "card_id": card_id,
+                "amount": amount,
+                "currency": top.get("currency"),
+                "status": top.get("status"),
+                "created": top.get("created"),
+            }
+            results.append(rec)
+            if update_fn and card_id:
+                try:
+                    update_fn(card_id, amount, top.get("id"))
+                except Exception:
+                    # swallow exceptions from user update_fn to avoid stopping reconciliation
+                    pass
+        return results
 
     def get_card(self, card_id: str) -> dict:
         obj = self._stripe.issuing.Card.retrieve(card_id)
