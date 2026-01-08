@@ -105,32 +105,70 @@ class MockIssuingAdapter:
 
 
 class StripeIssuingAdapter:
-    """Stub for a real Stripe Issuing adapter.
+    """Stripe Issuing adapter using the official `stripe` package.
 
-    This class provides method signatures but does not implement live calls.
-    Extend this class to call Stripe's Issuing API in production.
+    This adapter implements cardholder creation, virtual card issuance and
+    card status management using Stripe Issuing. It does not implement a
+    card-level "load_funds" operation because Stripe Issuing cards draw from
+    your platform balance; funding flows typically require Stripe Treasury
+    or platform top-ups. `load_funds` therefore raises NotImplementedError
+    and documents the recommended approach.
+
+    Usage:
+      adapter = StripeIssuingAdapter(api_key=YOUR_SECRET_KEY)
+      adapter.create_cardholder(...)
+      adapter.issue_virtual_card(...)
+
+    Note: actual calls require the `stripe` package to be installed and a
+    valid API key with Issuing access.
     """
 
     def __init__(self, api_key: str):
-        self.api_key = api_key
+        try:
+            import stripe
+        except Exception as exc:  # pragma: no cover - runtime import error
+            raise AdapterError("stripe package is required for StripeIssuingAdapter") from exc
+        self._stripe = stripe
+        self._stripe.api_key = api_key
 
     def create_cardholder(self, name: str, email: Optional[str] = None) -> dict:
-        raise NotImplementedError("Implement Stripe Issuing cardholder creation here")
+        params = {"type": "individual", "name": name}
+        if email:
+            params["email"] = email
+        obj = self._stripe.issuing.Cardholder.create(**params)
+        return obj.to_dict() if hasattr(obj, "to_dict") else dict(obj)
 
     def issue_virtual_card(self, cardholder_id: str, currency: str = "USD", initial_balance_cents: int = 0) -> dict:
-        raise NotImplementedError("Implement Stripe Issuing virtual card creation here")
+        # Create a virtual card linked to the provided cardholder.
+        params = {"cardholder": cardholder_id, "type": "virtual", "currency": currency.upper()}
+        obj = self._stripe.issuing.Card.create(**params)
+        return obj.to_dict() if hasattr(obj, "to_dict") else dict(obj)
 
     def load_funds(self, card_id: str, amount_cents: int = 0) -> dict:
-        raise NotImplementedError("Implement loading funds to a virtual card")
+        """Stripe Issuing does not provide a per-card load API.
+
+        To fund Issuing cards you must top up your Stripe balance (for example
+        via `stripe.Topup.create`) or use Stripe Treasury to move funds into a
+        ledger that authorizes card spending. Implementing a secure, live
+        top-up flow depends on your Stripe account setup and is intentionally
+        left to the integrator. This method raises to make that explicit.
+        """
+        raise NotImplementedError(
+            "load_funds is not implemented: use Stripe Top-ups or Treasury flows to fund Issuing cards"
+        )
 
     def get_card(self, card_id: str) -> dict:
-        raise NotImplementedError("Implement fetching card details")
+        obj = self._stripe.issuing.Card.retrieve(card_id)
+        return obj.to_dict() if hasattr(obj, "to_dict") else dict(obj)
 
     def freeze_card(self, card_id: str) -> dict:
-        raise NotImplementedError("Implement freezing a card")
+        obj = self._stripe.issuing.Card.modify(card_id, status="inactive")
+        return obj.to_dict() if hasattr(obj, "to_dict") else dict(obj)
 
     def unfreeze_card(self, card_id: str) -> dict:
-        raise NotImplementedError("Implement unfreezing a card")
+        obj = self._stripe.issuing.Card.modify(card_id, status="active")
+        return obj.to_dict() if hasattr(obj, "to_dict") else dict(obj)
 
     def close_card(self, card_id: str) -> dict:
-        raise NotImplementedError("Implement closing a card")
+        obj = self._stripe.issuing.Card.modify(card_id, status="canceled")
+        return obj.to_dict() if hasattr(obj, "to_dict") else dict(obj)
