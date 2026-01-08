@@ -1,22 +1,53 @@
-"""Demo for virtual prepaid card issuing using the MockIssuingAdapter."""
+"""Demo for virtual prepaid card issuing.
+
+This script supports two modes:
+- Mock mode (default) — uses `MockIssuingAdapter` and is safe to run.
+- Live mode — uses `StripeIssuingAdapter` when `STRIPE_API_KEY` is set.
+
+To perform a real top-up (live money), set `STRIPE_DO_TOPUP=1` and provide
+`STRIPE_TOPUP_AMOUNT_CENTS` (defaults to 1000).
+"""
+import os
 from payment_processor import IssuingProcessor, MockIssuingAdapter
 
 
 def run_demo():
-    adapter = MockIssuingAdapter()
+    stripe_key = os.environ.get("STRIPE_API_KEY")
+    stripe_live_flag = os.environ.get("STRIPE_LIVE", "0").lower() in ("1", "true", "yes")
+    do_topup = os.environ.get("STRIPE_DO_TOPUP", "0").lower() in ("1", "true", "yes")
+    topup_amount = int(os.environ.get("STRIPE_TOPUP_AMOUNT_CENTS", "1000"))
+
+    if stripe_key:
+        # create a StripeIssuingAdapter if stripe key provided; fall back to mock on error
+        try:
+            from payment_processor.issuing import StripeIssuingAdapter
+
+            adapter = StripeIssuingAdapter(api_key=stripe_key, live=stripe_live_flag)
+            print("Using StripeIssuingAdapter (live=%s)" % stripe_live_flag)
+        except Exception as exc:
+            print("Failed to initialize StripeIssuingAdapter:", exc)
+            print("Falling back to MockIssuingAdapter")
+            adapter = MockIssuingAdapter()
+    else:
+        adapter = MockIssuingAdapter()
+        print("Using MockIssuingAdapter (no STRIPE_API_KEY set)")
+
     issuing = IssuingProcessor(adapter)
 
     print("Creating cardholder Alice...")
     ch = issuing.create_cardholder("Alice Example", email="alice@example.com")
     print("Cardholder:", ch)
 
-    print("Issuing virtual card with $10.00 initial balance...")
-    card = issuing.issue_virtual_card(ch["id"], currency="USD", initial_balance_cents=1000)
+    print("Issuing virtual card (no initial balance)...")
+    card = issuing.issue_virtual_card(ch["id"], currency="USD", initial_balance_cents=0)
     print("Card:", card)
 
-    print("Loading $5.00 onto card...")
-    loaded = issuing.load_funds(card["id"], 500)
-    print("Loaded:", loaded)
+    if do_topup:
+        print(f"Performing top-up of {topup_amount} cents (this will move real funds in live mode)...")
+        loaded = issuing.load_funds(card["id"], topup_amount)
+        print("Top-up result:", loaded)
+    else:
+        print("Skipping top-up. To enable top-up set STRIPE_DO_TOPUP=1 and provide STRIPE_TOPUP_AMOUNT_CENTS.")
 
     print("Freezing card...")
     print(issuing.freeze_card(card["id"]))

@@ -1,5 +1,5 @@
 import uuid
-from typing import Optional
+from typing import Optional, Callable
 
 from .exceptions import PaymentError, AdapterError
 
@@ -123,13 +123,17 @@ class StripeIssuingAdapter:
     valid API key with Issuing access.
     """
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, live: bool = False):
         try:
             import stripe
         except Exception as exc:  # pragma: no cover - runtime import error
             raise AdapterError("stripe package is required for StripeIssuingAdapter") from exc
+        # validate live/test key vs requested mode
+        if live and api_key.startswith("sk_test"):
+            raise AdapterError("live=True but provided API key looks like a test key")
         self._stripe = stripe
         self._stripe.api_key = api_key
+        self.live = bool(live)
 
     def create_cardholder(self, name: str, email: Optional[str] = None) -> dict:
         params = {"type": "individual", "name": name}
@@ -144,18 +148,63 @@ class StripeIssuingAdapter:
         obj = self._stripe.issuing.Card.create(**params)
         return obj.to_dict() if hasattr(obj, "to_dict") else dict(obj)
 
-    def load_funds(self, card_id: str, amount_cents: int = 0) -> dict:
-        """Stripe Issuing does not provide a per-card load API.
+    def load_funds(self, card_id: str, amount_cents: int = 0, currency: str = "USD", description: str | None = None) -> dict:
+        """Create a Stripe Topup to add funds to the platform balance.
 
-        To fund Issuing cards you must top up your Stripe balance (for example
-        via `stripe.Topup.create`) or use Stripe Treasury to move funds into a
-        ledger that authorizes card spending. Implementing a secure, live
-        top-up flow depends on your Stripe account setup and is intentionally
-        left to the integrator. This method raises to make that explicit.
+        This implementation creates a `stripe.Topup` object and attaches the
+        `card_id` to `metadata` so the top-up can be reconciled to the card.
+
+        Note: creating a Topup requires that your Stripe account has a source
+        configured (bank account, or other) and that you understand how top-ups
+        affect your platform funds. This call performs a server-side top-up
+        and is a live-money operation when used with a live API key.
         """
-        raise NotImplementedError(
-            "load_funds is not implemented: use Stripe Top-ups or Treasury flows to fund Issuing cards"
-        )
+        if amount_cents <= 0:
+            raise AdapterError("amount_cents must be > 0")
+        params = {"amount": int(amount_cents), "currency": currency.lower(), "metadata": {"card_id": card_id}}
+        if description:
+            params["description"] = description
+        topup = self._stripe.Topup.create(**params)
+        return topup.to_dict() if hasattr(topup, "to_dict") else dict(topup)
+
+    def reconcile_topups(self, since: Optional[int] = None, update_fn: Optional[Callable] = None, limit: int = 100) -> list:
+        """Fetch recent Topups and return/optionally apply reconciliation.
+
+        - `since`: Unix timestamp (seconds) to fetch topups created >= since.
+        - `update_fn`: optional callable `update_fn(card_id, amount_cents, topup_id)`
+          which will be invoked for every topup that contains `metadata.card_id`.
+        - `limit`: max items per request (paginated fetch not implemented here).
+
+        Returns a list of dicts: `{topup_id, card_id, amount, currency, status, created}`
+        """
+        params = {"limit": int(limit)}
+        if since is not None:
+            params["created"] = {"gte": int(since)}
+        resp = self._stripe.Topup.list(**params)
+        items = getattr(resp, "data", resp) or []
+        results = []
+        for t in items:
+            # normalize to dict-like
+            top = t.to_dict() if hasattr(t, "to_dict") else dict(t)
+            metadata = top.get("metadata", {}) or {}
+            card_id = metadata.get("card_id")
+            amount = int(top.get("amount", 0))
+            rec = {
+                "topup_id": top.get("id"),
+                "card_id": card_id,
+                "amount": amount,
+                "currency": top.get("currency"),
+                "status": top.get("status"),
+                "created": top.get("created"),
+            }
+            results.append(rec)
+            if update_fn and card_id:
+                try:
+                    update_fn(card_id, amount, top.get("id"))
+                except Exception:
+                    # swallow exceptions from user update_fn to avoid stopping reconciliation
+                    pass
+        return results
 
     def get_card(self, card_id: str) -> dict:
         obj = self._stripe.issuing.Card.retrieve(card_id)
