@@ -1,0 +1,6 @@
+pytest
+requests
+Flask
+fastapi
+uvicorn
+stripe
