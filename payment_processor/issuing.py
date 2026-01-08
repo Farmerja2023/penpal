@@ -131,6 +131,13 @@ class StripeIssuingAdapter:
         # validate live/test key vs requested mode
         if live and api_key.startswith("sk_test"):
             raise AdapterError("live=True but provided API key looks like a test key")
+        # global safety guard: enable live mode repository-wide via env var
+        try:
+            from .config import is_live_mode_enabled
+        except Exception:
+            is_live_mode_enabled = lambda: False
+        if live and not is_live_mode_enabled():
+            raise AdapterError("live operations are disabled. Set ENABLE_LIVE_MODE=1 to enable live mode")
         self._stripe = stripe
         self._stripe.api_key = api_key
         self.live = bool(live)
