@@ -14,6 +14,7 @@ from payment_processor import IssuingProcessor, MockIssuingAdapter
 def run_demo():
     stripe_key = os.environ.get("STRIPE_API_KEY")
     stripe_live_flag = os.environ.get("STRIPE_LIVE", "0").lower() in ("1", "true", "yes")
+    enable_live_global = os.environ.get("ENABLE_LIVE_MODE", "0").lower() in ("1", "true", "yes")
     do_topup = os.environ.get("STRIPE_DO_TOPUP", "0").lower() in ("1", "true", "yes")
     topup_amount = int(os.environ.get("STRIPE_TOPUP_AMOUNT_CENTS", "1000"))
 
@@ -22,8 +23,12 @@ def run_demo():
         try:
             from payment_processor.issuing import StripeIssuingAdapter
 
-            adapter = StripeIssuingAdapter(api_key=stripe_key, live=stripe_live_flag)
-            print("Using StripeIssuingAdapter (live=%s)" % stripe_live_flag)
+            # require both the per-run flag and the repository-wide ENABLE_LIVE_MODE
+            real_live = stripe_live_flag and enable_live_global
+            if stripe_live_flag and not enable_live_global:
+                print("Warning: STRIPE_LIVE requested but ENABLE_LIVE_MODE is not enabled. To enable set ENABLE_LIVE_MODE=1")
+            adapter = StripeIssuingAdapter(api_key=stripe_key, live=real_live)
+            print("Using StripeIssuingAdapter (live=%s)" % real_live)
         except Exception as exc:
             print("Failed to initialize StripeIssuingAdapter:", exc)
             print("Falling back to MockIssuingAdapter")
@@ -43,9 +48,12 @@ def run_demo():
     print("Card:", card)
 
     if do_topup:
-        print(f"Performing top-up of {topup_amount} cents (this will move real funds in live mode)...")
-        loaded = issuing.load_funds(card["id"], topup_amount)
-        print("Top-up result:", loaded)
+        if not enable_live_global:
+            print("STRIPE_DO_TOPUP requested but ENABLE_LIVE_MODE is not set — skipping top-up for safety.")
+        else:
+            print(f"Performing top-up of {topup_amount} cents (this will move real funds in live mode)...")
+            loaded = issuing.load_funds(card["id"], topup_amount)
+            print("Top-up result:", loaded)
     else:
         print("Skipping top-up. To enable top-up set STRIPE_DO_TOPUP=1 and provide STRIPE_TOPUP_AMOUNT_CENTS.")
 

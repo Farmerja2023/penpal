@@ -18,6 +18,7 @@ environment variables to enable live operations:
 - `STRIPE_LIVE`: set to `1` or `true` to indicate you intend live operations; the adapter will validate key shape.
 - `STRIPE_DO_TOPUP`: set to `1` to perform a real top-up when running `scripts/demo_issuing.py` (disabled by default for safety).
 - `STRIPE_TOPUP_AMOUNT_CENTS`: amount of the top-up in cents (defaults to `1000`).
+ - `ENABLE_LIVE_MODE`: repository-wide safety switch. Must be set to `1` or `true` in the environment in addition to `STRIPE_LIVE` to enable live-money operations like top-ups.
 
 Important safety notes:
 
